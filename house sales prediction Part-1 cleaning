@@ -1,0 +1,139 @@
+#------ Cleaning Data ----
+train_data_h.shape  #(1460, 81)
+
+# ---------- Handling missing values ------ ###
+# Removing columns which has a certain threshold of null values
+# Here I took threshold of 40%
+
+def remove_null_col(threshold,df):
+    nv = df.isnull().sum()
+    lst=[]
+    for x ,i in nv.items():         
+        if threshold <= i/len(df.index):
+            lst.append(x)            
+    cols_needed_remove=lst      
+    return(cols_needed_remove)
+
+train_dta_h_cleaned = train_data_h.copy().drop(remove_null_col(0.4,train_data_h), axis=1) # removing null value cols(threshold 40%)
+
+
+# Removing single value in column
+train_data_h=train_data_h.loc[:,train_data_h.apply(pd.Series.nunique) != 1]
+# No single value columns
+
+# Removing cols which have unique length less than 4 and values which 
+# has insignificant frequncy
+for col in train_data_h.columns:
+    if (len(train_data_h[col].unique()) < 4):
+        print(train_data_h[col].value_counts())
+        print()
+# dropping cols ['Street','Utilities']    
+
+#Identifying duplicating rows
+dups = train_data_h.duplicated()
+train_data_h[dups]
+# No Duplicate rows
+
+#------ Understanding Columns with Data Dictionary---------
+data_dictionary = pd.read_csv("S:/SURAJ_STUFF/Spyder/Saved Python files/house prediction M.L 2/Data_dictionary.csv")
+data_dictionary = data_dictionary.rename(columns={'Key': 'name', 'Value': 'description'})
+
+# merging data dictionary with first row values of training data
+
+train_dta_dtypes = pd.DataFrame(train_dta_h_cleaned.dtypes,columns=['dtypes'])
+train_dta_dtypes = train_dta_dtypes.reset_index()
+train_dta_dtypes['name'] = train_dta_dtypes['index']
+train_dta_dtypes = train_dta_dtypes[['name','dtypes']]
+train_dta_dtypes['first value'] = train_dta_h_cleaned.loc[0].values
+preview = train_dta_dtypes.merge(data_dictionary, on='name',how='left')
+preview.head()
+
+
+## ----  actions need to be performed on the cleaning ----##
+""" leaks information from the future (Data Leakage may lead to overfitting)"""
+""" Does not affect the prices of the house"""
+""" formatted poorly"""
+""" requires more data or lot of preprocessing"""
+""" contains redundant information """
+preview[60:76] #taking previews in a batch of 20
+
+drop_list = ['Id','BsmtFinSF1','BsmtFinSF2','BsmtUnfSF','MoSold','YrSold','MSSubClass','Street','Utilities'] 
+# since total finish area is present ,
+# removing month sold, year sold since there are other factors influencing the time(may prone to overfitting)
+# removing MSSubclass is represented by build type, house style
+
+check_lst = ['MSSubClass','BldgType','HouseStyle']['Exterior1st','Exterior2nd']['BsmtFinType1','BsmtFinType2']
+
+# checking list
+train_dta_h_cleaned.loc[:,['BsmtFinType1','BsmtFinType2']].drop_duplicates().sort_values(axis=0, ascending=True,by='BsmtFinType1')
+
+#dropping unnecessary columns
+train_dta_h_cleaned = train_dta_h_cleaned.drop(drop_list,axis=1) 
+
+# saving filtered data  
+train_dta_h_cleaned.to_csv("S:/SURAJ_STUFF/Spyder/Saved Python files/house prediction M.L 2/filtered_train_data.csv",index=False)
+#%%
+
+filtered_train = pd.read_csv("S:/SURAJ_STUFF/Spyder/Saved Python files/house prediction M.L 2/filtered_train_data.csv")
+filtered_train.shape #(1460, 67)
+
+
+
+#-------------Handling missing values Part 2-------------#
+
+nv = filtered_train.isnull().sum()
+print(nv[nv!=0])
+
+#delete rows with less number of nulls ['MasVnrType','MasVnrArea','Electrical']
+filtered_train.dropna(axis=0,subset=['MasVnrType','MasVnrArea','Electrical'],inplace=True)
+
+#imputing other missing values in coulmns with most frequent values
+
+from sklearn.impute import SimpleImputer
+imp_mean = SimpleImputer( strategy='most_frequent')
+imp_mean.fit(filtered_train)
+filtered_train[:] = imp_mean.transform(filtered_train)
+
+nv = filtered_train.isnull().sum()
+print(nv[nv!=0]) #None
+
+
+#------------ Categorical data to numerical data----------#
+object_columns_df = filtered_train.select_dtypes(include=['object'])
+# Lets explore the value counts of each column
+cols = list(object_columns_df.iloc[0,:].index)
+
+for name in cols:
+    print(name,':')
+    print(object_columns_df[name].value_counts(),'\n')
+
+
+# Ordinal Columns Transformation
+    
+Ord_Columns =['ExterQual','ExterCond','BsmtQual','BsmtCond',
+  'HeatingQC','KitchenQual','GarageQual','GarageCond']
+
+mapping_dict = {}
+for name in Ord_Columns:
+    lst = {name: {
+                    "Ex":5,
+                    "Gd":4,
+                    "TA":3,
+                    "Fa":2,
+                    "Po":1
+                    }}
+    mapping_dict.update(lst)
+            
+filtered_train = filtered_train.replace(mapping_dict)
+
+# Nominal Columns Transformation
+nominal_cols =[x for x in cols if x not in Ord_Columns]
+
+dummy_df = pd.get_dummies(filtered_train[nominal_cols])
+filtered_train = pd.concat([filtered_train, dummy_df], axis=1)
+filtered_train = filtered_train.drop(nominal_cols, axis=1)
+
+filtered_train.isnull().sum()
+filtered_train.shape #(1451,233)
+
+#------------------------END---------------------------#
