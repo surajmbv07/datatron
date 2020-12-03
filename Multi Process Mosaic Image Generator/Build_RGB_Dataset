@@ -1,0 +1,88 @@
+
+#%%
+from PIL import Image, ImageEnhance
+import numpy as np
+import os
+import pandas as pd
+import argparse
+import cv2
+
+def get_args():
+    parser = argparse.ArgumentParser(description='AVG RGB Dataset Builder')
+    parser.add_argument('--SOURCE_PATH', type=str, required=True, help='Path to source images folder')
+    return parser.parse_args()
+
+
+def build_dataframe_average_rgb():
+    args = get_args()
+
+    df=pd.DataFrame(columns=['filename','avg_r','avg_g','avg_b'])
+    
+    source = args.SOURCE_PATH
+    _, _,filenames = next(os.walk(source)) 
+
+    length=len(filenames)
+    index=0
+    
+    print('')
+    for filename in filenames:
+        try:
+            newpath = source+'/Processed_Images' 
+            if not os.path.exists(newpath):
+                os.makedirs(newpath)
+            img = Image.open(source+'/'+filename)
+            img_array = np.array(img)
+            #Get the average value of Red, Green, and Blue
+            #Original Image
+            df=df.append({'filename':filename,'avg_r':np.mean(img_array[:,:,0]),'avg_g':np.mean(img_array[:,:,1]),'avg_b':np.mean(img_array[:,:,2])},ignore_index=True)
+            img.save(source+'/Processed_Images/'+filename)
+            
+            # RGB -> BGR Image
+            bgr_img_array = img_array[:,:,::-1]
+            df=df.append({'filename':'bgr_'+filename,'avg_r':np.mean(bgr_img_array[:,:,0]),'avg_g':np.mean(bgr_img_array[:,:,1]),'avg_b':np.mean(bgr_img_array[:,:,2])},ignore_index=True)
+            bgr_img = Image.fromarray(bgr_img_array)
+            bgr_img.save(source+'/Processed_Images/'+'bgr_'+filename)
+
+            # Enhanced Image
+            img_enh = ImageEnhance.Contrast(img)
+            img_enh = img_enh.enhance(1.8)
+            img_enh_array = np.array(img_enh)
+            df=df.append({'filename':'enh_' + filename,'avg_r':np.mean(img_enh_array[:,:,0]),'avg_g':np.mean(img_enh_array[:,:,1]),'avg_b':np.mean(img_enh_array[:,:,2])},ignore_index=True)
+            img_enh.save(source+'/Processed_Images/'+'enh_'+filename)
+
+            # Grayscale Image
+            grey_img = img.convert('L')
+            grey_img_array = np.array(grey_img)
+            df=df.append({'filename':'gray_' + filename,'avg_r':np.mean(grey_img_array),'avg_g':np.mean(grey_img_array),'avg_b':np.mean(grey_img_array)},ignore_index=True)
+            grey_img.save(source+'/Processed_Images/'+'gray_'+filename)
+            
+            image = cv2.imread(source+'/'+filename)
+            # Blur Image
+            img_blur_array = cv2.blur(image,(30,30))
+            df=df.append({'filename':'blur_' + filename,'avg_r':np.mean(img_blur_array[:,:,0]),'avg_g':np.mean(img_blur_array[:,:,1]),'avg_b':np.mean(img_blur_array[:,:,2])},ignore_index=True)
+            cv2.imwrite(source+'/Processed_Images/'+'blur_'+filename,img_blur_array)
+
+            # Gaussian Blur
+            gaussianBlurKernel = np.array(([[1, 2, 1], [2, 4, 2], [1, 2, 1]]), np.float32)/9
+            gaussianBlur = cv2.filter2D(src=image, kernel=gaussianBlurKernel, ddepth=-1)
+            df=df.append({'filename':'Gaus_' + filename,'avg_r':np.mean(gaussianBlur[:,:,0]),'avg_g':np.mean(gaussianBlur[:,:,1]),'avg_b':np.mean(gaussianBlur[:,:,2])},ignore_index=True)
+            cv2.imwrite(source+'/Processed_Images/'+'Gaus_'+filename,gaussianBlur)
+
+            # Sharpen
+            sharpenKernel = np.array(([[0, -1, 0], [-1, 9, -1], [0, -1, 0]]), np.float32)/9
+            sharpen = cv2.filter2D(src=image, kernel=sharpenKernel, ddepth=-1)
+            df=df.append({'filename':'Sha_' + filename,'avg_r':np.mean(sharpen[:,:,0]),'avg_g':np.mean(sharpen[:,:,1]),'avg_b':np.mean(sharpen[:,:,2])},ignore_index=True)
+            cv2.imwrite(source+'/Processed_Images/'+'Sha_'+filename,sharpen)
+
+            index+=1
+            print(('%.4f percents done \r')%(index*100/length))
+        except:
+            index+=1
+            print('\n Image Error')
+    print('')
+    df.to_csv(source+'/Processed_Images/'+'Avg_RGB_dataset.csv',index=False)
+
+if __name__=='__main__':
+    build_dataframe_average_rgb()
+#%%
+    
