@@ -1,0 +1,236 @@
+from pil import Image
+import numpy as np
+import os
+import pandas as pd
+import argparse
+import time
+import multiprocessing as mp
+from multiprocessing import Pool
+import itertools 
+from functools import partial
+from multiprocessing import Process, lock
+import ctypes as c
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description='Mosaic Image Generator')
+    parser.add_argument('--pixel_batch_size', type=int, default=1, required=True, help='control the detail of picture, lower means more detail but takes longer time to produce.')
+    parser.add_argument('--rmse_threshold', type=float, default=0.5, required=True, help='control the color similarity, try as lower as possible in the beginning. If adjust_threshold is 0 and if there is an error indicating "too lower threshold" then try to add the value slowly')
+    parser.add_argument('--target_PATH', type=str, required=True, help='PATH to the target image')
+    parser.add_argument('--source_PATH', type=str, required=True, help='PATH to the set of source images')
+    parser.add_argument('--OUTPUT_PATH', type=str, required=True, help='PATH to the output image')
+    parser.add_argument('--adjust_threshold', type=float, default=0.5, required=True, help='value of adjusted threshold for pixels which have rmse higher then the given initial threshold. If 0 then it will not adjusted')   
+    parser.add_argument('--output_width', type=int, default=100, required=True, help='the width of output image. Height will be adjusted to maintain the aspect ratio')
+    parser.add_argument('--processors', type=int, default=3, required=True, help='processors that needs to be used for multiprocessing')
+
+    return parser.parse_args()
+
+def main():
+    
+    args = get_args()
+    
+   
+    pixel_batch_size = args.pixel_batch_size
+    rmse_threshold = args.rmse_threshold
+    source_PATH = args.source_PATH
+    target_PATH = args.target_PATH
+    target_img_filenames = os.listdir(target_PATH)    
+    OUTPUT_PATH = args.OUTPUT_PATH
+    adjust_threshold = args.adjust_threshold
+    resize_width = args.output_width
+    processors = args.processors   
+       
+    
+    #Import target image
+    img=Image.open(target_PATH+'/'+''.join(target_img_filenames))
+    
+    #Resize target image
+    basewidth = resize_width
+    wpercent = (basewidth/float(img.size[0]))
+    hsize = int((float(img.size[1])*float(wpercent)))
+    img = img.resize((basewidth,hsize), Image.ANTIALIAS)
+    img=np.array(img)
+
+    #Adjust Pixel Batch Size so it is the multiples of image's height and width
+    pixel_batch_size=check_pixel_batch_size(pixel_batch_size,img)
+    print('Used Pixel Batch Size: %d '%(pixel_batch_size))
+    print('')
+
+    #Import Database of Average RGB
+    df=pd.read_csv(source_PATH+'/'+'Avg_RGB_dataset.csv')
+    target_image_height=img.shape[0]
+    target_image_width=img.shape[1]
+    threshold_original = rmse_threshold    
+    threshold = rmse_threshold
+    
+    print('')
+    print('Image Size: %dx%d \n'%(target_image_height,target_image_width))
+    print('')    
+    
+    #Adjust Mosaic Builder Size so it is the multiples of pixel batch size
+    size=check_mosaic_builder_size(size=50,pixel_batch_size=pixel_batch_size)
+    print('')
+    print('Used Mosaic Builder Size: %d'%(size))
+    print('')
+    
+    #Constant Multiplier 
+    k=int(size/pixel_batch_size)
+
+    #Iteration index
+    index=0
+    
+    # Generate list of of relevant filenames per pixel batch size using Multiprocessing
+    print("Number of processors: %d" %(mp.cpu_count()))
+    t_bing_pool=time.time()
+    p=Pool(processes=processors)       
+
+ 
+    list1  = [i for i in range(0,target_image_height,pixel_batch_size)] 
+    list2  = [j for j in range(0,target_image_width,pixel_batch_size)]
+    argment = [(i,j) for i,j in itertools.product(list1, list2)]
+    func = partial(find_filename_per_pixel_batch_size, img, threshold,threshold_original, df, adjust_threshold,pixel_batch_size)
+    result=p.map(func,argment) 
+    filenames=pd.concat(result)
+  
+    elapsed_bing_pool =time.time() -t_bing_pool
+    print('')
+    print('Filenames created in '+ str(round(elapsed_bing_pool/60,2))+' mins')
+    
+    #filenames = filenames.iloc[:,0].values.tolist()
+    
+    filenames['i']= filenames['i']*k
+    filenames['j']= filenames['j']*k
+    
+    #Initiate Zeros Tensor for Mosaic    
+    #Making 3D SHARED ARRAY from 1D array.
+    X_shape = (target_image_height*k,target_image_width*k,3)
+    X = mp.Array(c.c_double, X_shape[0]*X_shape[1]*X_shape[2]) 
+    arr = np.frombuffer(X.get_obj()) 
+    shared_array = arr.reshape(X_shape) #3D Zero Tensor
+    
+    t_pool = time.time()
+         
+    list1  = [i for i in range(0,target_image_height*k,size)] 
+    list2  = [j for j in range(0,target_image_width*k,size)] 
+    argms = [(i, j) for i, j in itertools.product(list1,list2)]
+    func = partial(creating_mosaic,filenames,size,source_PATH,shared_array)
+    with Pool(processes=processors, initializer=init_worker, initargs=(X, X_shape)) as pool:
+        pool.map(func, argms)
+    
+ 
+    img_concat = shared_array
+    
+    print(type(img_concat))
+    print('')
+    print (img_concat.shape)
+    # img_concat=cv2.resize(img_concat, dsize=(int(target_image_width*k/2),int(target_image_height*k/2)), interpolation=cv2.INTER_AREA)
+    output=Image.fromarray(img_concat.astype(np.uint8))
+    output = output.resize((int(target_image_width*k/2),int(target_image_height*k/2)), Image.ANTIALIAS)
+    output.save(OUTPUT_PATH+'/Mosaic_Image.jpg', 'JPEG')
+    print('')
+    print('\n Mosaic Image Saved! \n')
+    print('')
+    
+    elapsed_bing_pool =time.time() -t_pool
+    print('\nMosaic Image created in '+ str(round(elapsed_bing_pool/60,2))+' min\n')
+
+
+def find_filename_per_pixel_batch_size(img, threshold,threshold_original, df, adjust_threshold,pixel_batch_size,item):
+    '''
+    Function to return a list of 
+    relevant filename per pixel batch size
+    '''  
+    
+    i,j = item
+           
+    batch_pixel=img[i:i+pixel_batch_size,j:j+pixel_batch_size,:]
+
+    while True:                    
+        #Extract the average RGB from batch pixel
+        pixel=[np.mean(batch_pixel[:,:,0]),np.mean(batch_pixel[:,:,1]),np.mean(batch_pixel[:,:,2])]                    
+
+        #Slice database with RGB value around the threshold
+        toy=df.copy()
+        toy=toy[(toy.avg_r<=pixel[0]+threshold) & (toy.avg_r>=pixel[0]-threshold) & (toy.avg_g<=pixel[1]+threshold) & (toy.avg_g>=pixel[1]-threshold) & (toy.avg_b<=pixel[2]+threshold) & (toy.avg_b>=pixel[2]-threshold)][['avg_r','avg_g','avg_b','filename']]
+        it=toy.index.tolist() 
+        #Looping through the sliced database
+        if len(toy)==0:
+            threshold+=adjust_threshold
+                           
+        else:
+            t=[]                       
+            for p in it:
+                rmse=np.sqrt(np.mean((toy.loc[p,['avg_r','avg_g','avg_b']] - pixel)**2))
+                t.append([p,rmse])
+            df_toy = pd.DataFrame(t,columns=['index_s','rmse'])
+            df_toy.index = df_toy['index_s']
+            filename=toy.loc[df_toy['rmse'].idxmin(),'filename']                                                
+            threshold = threshold_original               
+            print('Finish Creating Filename DataFrame for pixel %d,%d \r'%(i+pixel_batch_size,j+pixel_batch_size))
+            print('')
+            break    
+    return pd.DataFrame({'i':[i],'j':[j],'filename':[filename]})
+
+def check_pixel_batch_size(pixel_batch_size,img):
+    '''
+    Function to adjust Pixel Batch Size so it is the 
+    multiples of image's height and width
+    '''
+
+    if (img.shape[0]%pixel_batch_size==0) and (img.shape[1]%pixel_batch_size==0):
+        print(pixel_batch_size)
+        return pixel_batch_size
+    else:
+        pixel_batch_size+=1
+        return check_pixel_batch_size(pixel_batch_size,img)
+
+
+
+def check_mosaic_builder_size(size,pixel_batch_size):
+    '''
+    Function to adjust Mosaic Builder Size so it is the 
+    multiplies of pixel batch size
+    '''
+    if (size%pixel_batch_size==0):
+        return size
+    else:
+        size+=1
+        return check_mosaic_builder_size(size,pixel_batch_size)
+
+def creating_mosaic(filenames,size,source_PATH,shared_array,argms):
+    '''
+    Function to assign each pixel image to 3D SHARED ARRAY
+    '''
+    i,j=argms
+    
+    img=Image.open(source_PATH+'/'+filenames.loc[(filenames['i'] == i) & (filenames['j'] == j),'filename'].values[0])
+    img=np.array(img.resize((size,size)))
+    try:
+        img.shape[2]
+    except:#for grayscale image, convert into 3d array
+        img = np.stack((img,)*3, axis=-1)
+    shared_array =np.frombuffer(var_dict['X'].get_obj()).reshape(var_dict['X_shape']) #copy from the global 3D shared_array  
+
+    shared_array[i:i+size,j:j+size,:]=img
+    print('Finish Creating Mosaic for pixel %d,%d \r'%(i+size,j+size))
+    
+
+def init_worker(X, X_shape):
+    '''
+    Function to declare 3D array as 3D global Shared array
+    '''
+    global var_dict
+    var_dict = {}
+    # Using a dictionary is not strictly necessary. You can also
+    # use global variables.
+    var_dict['X'] = X
+    var_dict['X_shape'] = X_shape
+
+
+if __name__=='__main__':
+    main()
+         
+    
+
+
+
